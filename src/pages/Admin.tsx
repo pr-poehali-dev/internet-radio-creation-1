@@ -5,6 +5,7 @@ import Icon from "@/components/ui/icon";
 const API_TRACKS = "https://functions.poehali.dev/0859e736-782d-4290-a1c8-1824f807168a";
 const API_AUTH = "https://functions.poehali.dev/d4d5caf0-6b72-46a2-9242-ee6bbfae9754";
 const API_SETTINGS = "https://functions.poehali.dev/76b15ad4-c742-43df-8aa9-7243003b4233";
+const API_UPLOAD = "https://functions.poehali.dev/5695d04d-4102-49a4-b03a-d33fbb7c29cb";
 
 interface Track {
   id: number;
@@ -95,49 +96,45 @@ export default function Admin() {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    const MAX_SIZE_MB = 8;
-    const MAX_SIZE = MAX_SIZE_MB * 1024 * 1024;
-
     setUploading(true);
     let hasError = false;
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-
-      if (file.size > MAX_SIZE) {
-        setUploadProgress(`Файл "${file.name}" слишком большой (макс. ${MAX_SIZE_MB} МБ)`);
-        hasError = true;
-        await new Promise((r) => setTimeout(r, 2500));
-        continue;
-      }
-
+      const title = file.name.replace(/\.(mp3|wav|ogg|flac)$/i, "").replace(/_/g, " ");
       setUploadProgress(`Загружаю ${i + 1}/${files.length}: ${file.name}`);
 
-      const reader = new FileReader();
-      const uploadResult = await new Promise<boolean>((resolve) => {
-        reader.onload = async (ev) => {
-          const base64 = (ev.target?.result as string).split(",")[1];
-          const title = file.name.replace(/\.(mp3|wav|ogg|flac)$/i, "").replace(/_/g, " ");
+      try {
+        // Шаг 1: получаем presigned URL
+        const presignRes = await fetch(API_UPLOAD, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Admin-Token": token },
+          body: JSON.stringify({ action: "presign", file_name: file.name }),
+        });
+        if (!presignRes.ok) throw new Error("Не удалось получить URL загрузки");
+        const { upload_url, key } = await presignRes.json();
 
-          try {
-            const res = await fetch(API_TRACKS, {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "X-Admin-Token": token },
-              body: JSON.stringify({ title, artist: "", file_data: base64, file_name: file.name }),
-            });
-            resolve(res.ok);
-          } catch (_e) {
-            resolve(false);
-          }
-        };
-        reader.onerror = () => resolve(false);
-        reader.readAsDataURL(file);
-      });
+        // Шаг 2: загружаем файл напрямую в S3
+        const ext = file.name.split(".").pop()?.toLowerCase();
+        const uploadRes = await fetch(upload_url, {
+          method: "PUT",
+          headers: { "Content-Type": `audio/${ext || "mpeg"}` },
+          body: file,
+        });
+        if (!uploadRes.ok) throw new Error("Ошибка загрузки файла в хранилище");
 
-      if (!uploadResult) {
-        setUploadProgress(`Ошибка при загрузке "${file.name}"`);
+        // Шаг 3: подтверждаем и сохраняем трек в БД
+        const confirmRes = await fetch(API_UPLOAD, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Admin-Token": token },
+          body: JSON.stringify({ action: "confirm", key, title, artist: "" }),
+        });
+        if (!confirmRes.ok) throw new Error("Ошибка сохранения трека");
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : "Неизвестная ошибка";
+        setUploadProgress(`Ошибка: ${message}`);
         hasError = true;
-        await new Promise((r) => setTimeout(r, 2000));
+        await new Promise((r) => setTimeout(r, 2500));
       }
     }
 
