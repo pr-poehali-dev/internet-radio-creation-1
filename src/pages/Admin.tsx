@@ -145,7 +145,6 @@ export default function Admin() {
           setUploadProgress(`Загружаю ${i + 1}/${files.length}: ${file.name} (0%)`);
           const { key, upload_id } = await apiCall({ action: "init", file_name: file.name });
 
-          const parts: { etag: string; part_number: number }[] = [];
           for (let c = 0; c < totalChunks; c++) {
             const start = c * CHUNK_SIZE;
             const end = Math.min(start + CHUNK_SIZE, buffer.byteLength);
@@ -153,13 +152,12 @@ export default function Admin() {
             const pct = Math.round(((c + 1) / totalChunks) * 100);
             setUploadProgress(`Загружаю ${i + 1}/${files.length}: ${file.name} (${pct}%)`);
 
-            const result = await apiCall({
-              action: "chunk", key, upload_id, part_number: c + 1, data: chunkBase64,
+            await apiCall({
+              action: "chunk", upload_id, part_number: c + 1, data: chunkBase64,
             });
-            parts.push({ etag: result.etag, part_number: result.part_number });
           }
 
-          await apiCall({ action: "complete", key, upload_id, parts, title, artist: "" });
+          await apiCall({ action: "complete", key, upload_id, title, artist: "" });
         }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : "Неизвестная ошибка";
