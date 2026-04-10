@@ -92,6 +92,36 @@ export default function Admin() {
     }
   }, [isAuthed]);
 
+  const CHUNK_SIZE = 384 * 1024;
+
+  const readFileAsArrayBuffer = (file: File): Promise<ArrayBuffer> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as ArrayBuffer);
+      reader.onerror = () => reject(new Error("Не удалось прочитать файл"));
+      reader.readAsArrayBuffer(file);
+    });
+
+  const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  };
+
+  const apiCall = async (body: Record<string, unknown>) => {
+    const res = await fetch(API_UPLOAD, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": token },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    return res.json();
+  };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
@@ -102,34 +132,35 @@ export default function Admin() {
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const title = file.name.replace(/\.(mp3|wav|ogg|flac)$/i, "").replace(/_/g, " ");
-      setUploadProgress(`Загружаю ${i + 1}/${files.length}: ${file.name}`);
 
       try {
-        // Шаг 1: получаем presigned URL
-        const presignRes = await fetch(API_UPLOAD, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Admin-Token": token },
-          body: JSON.stringify({ action: "presign", file_name: file.name }),
-        });
-        if (!presignRes.ok) throw new Error("Не удалось получить URL загрузки");
-        const { upload_url, key } = await presignRes.json();
+        const buffer = await readFileAsArrayBuffer(file);
+        const totalChunks = Math.ceil(buffer.byteLength / CHUNK_SIZE);
 
-        // Шаг 2: загружаем файл напрямую в S3
-        const ext = file.name.split(".").pop()?.toLowerCase();
-        const uploadRes = await fetch(upload_url, {
-          method: "PUT",
-          headers: { "Content-Type": `audio/${ext || "mpeg"}` },
-          body: file,
-        });
-        if (!uploadRes.ok) throw new Error("Ошибка загрузки файла в хранилище");
+        if (totalChunks <= 1) {
+          setUploadProgress(`Загружаю ${i + 1}/${files.length}: ${file.name}`);
+          const base64 = arrayBufferToBase64(buffer);
+          await apiCall({ action: "upload", file_data: base64, file_name: file.name, title, artist: "" });
+        } else {
+          setUploadProgress(`Загружаю ${i + 1}/${files.length}: ${file.name} (0%)`);
+          const { key, upload_id } = await apiCall({ action: "init", file_name: file.name });
 
-        // Шаг 3: подтверждаем и сохраняем трек в БД
-        const confirmRes = await fetch(API_UPLOAD, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Admin-Token": token },
-          body: JSON.stringify({ action: "confirm", key, title, artist: "" }),
-        });
-        if (!confirmRes.ok) throw new Error("Ошибка сохранения трека");
+          const parts: { etag: string; part_number: number }[] = [];
+          for (let c = 0; c < totalChunks; c++) {
+            const start = c * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, buffer.byteLength);
+            const chunkBase64 = arrayBufferToBase64(buffer.slice(start, end));
+            const pct = Math.round(((c + 1) / totalChunks) * 100);
+            setUploadProgress(`Загружаю ${i + 1}/${files.length}: ${file.name} (${pct}%)`);
+
+            const result = await apiCall({
+              action: "chunk", key, upload_id, part_number: c + 1, data: chunkBase64,
+            });
+            parts.push({ etag: result.etag, part_number: result.part_number });
+          }
+
+          await apiCall({ action: "complete", key, upload_id, parts, title, artist: "" });
+        }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : "Неизвестная ошибка";
         setUploadProgress(`Ошибка: ${message}`);
@@ -293,7 +324,7 @@ export default function Admin() {
                 <>
                   <Icon name="Upload" size={32} className="text-muted-foreground mx-auto mb-3" />
                   <p className="text-sm font-medium mb-1">Нажмите или перетащите файлы</p>
-                  <p className="text-xs text-muted-foreground">MP3, WAV, OGG, FLAC · до 8 МБ на файл</p>
+                  <p className="text-xs text-muted-foreground">MP3, WAV, OGG, FLAC — любой размер</p>
                 </>
               )}
             </div>
