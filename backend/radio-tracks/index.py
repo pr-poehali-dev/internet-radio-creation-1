@@ -7,7 +7,11 @@ import base64
 import uuid
 import psycopg2
 import boto3
+import logging
 from botocore.exceptions import ClientError
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 SCHEMA = os.environ.get("MAIN_DB_SCHEMA", "public")
 
@@ -76,29 +80,52 @@ def handler(event: dict, context) -> dict:
     # POST — загрузка нового трека
     if method == "POST":
         if not check_admin(event):
+            logger.info("POST /tracks: forbidden")
             return {"statusCode": 403, "headers": CORS_HEADERS, "body": json.dumps({"error": "Forbidden"})}
 
-        body = json.loads(event.get("body") or "{}")
+        raw_body = event.get("body") or "{}"
+        logger.info(f"POST /tracks: body length={len(raw_body)}, isBase64={event.get('isBase64Encoded')}")
+
+        try:
+            body = json.loads(raw_body)
+        except Exception as e:
+            logger.error(f"POST /tracks: json parse error: {e}")
+            return {"statusCode": 400, "headers": CORS_HEADERS, "body": json.dumps({"error": f"JSON parse error: {e}"})}
+
         title = body.get("title", "Без названия")
         artist = body.get("artist", "")
         file_data = body.get("file_data", "")
         file_name = body.get("file_name", "track.mp3")
 
+        logger.info(f"POST /tracks: title={title}, file_name={file_name}, file_data length={len(file_data)}")
+
         if not file_data:
             return {"statusCode": 400, "headers": CORS_HEADERS, "body": json.dumps({"error": "No file data"})}
 
         # Декодируем base64
-        audio_bytes = base64.b64decode(file_data)
+        try:
+            audio_bytes = base64.b64decode(file_data)
+            logger.info(f"POST /tracks: decoded {len(audio_bytes)} bytes")
+        except Exception as e:
+            logger.error(f"POST /tracks: base64 decode error: {e}")
+            return {"statusCode": 400, "headers": CORS_HEADERS, "body": json.dumps({"error": f"Base64 error: {e}"})}
+
         ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else "mp3"
         key = f"radio/{uuid.uuid4()}.{ext}"
 
-        s3 = get_s3()
-        s3.put_object(
-            Bucket="files",
-            Key=key,
-            Body=audio_bytes,
-            ContentType=f"audio/{ext}",
-        )
+        try:
+            s3 = get_s3()
+            s3.put_object(
+                Bucket="files",
+                Key=key,
+                Body=audio_bytes,
+                ContentType=f"audio/{ext}",
+            )
+            logger.info(f"POST /tracks: uploaded to S3 key={key}")
+        except Exception as e:
+            logger.error(f"POST /tracks: S3 upload error: {e}")
+            return {"statusCode": 500, "headers": CORS_HEADERS, "body": json.dumps({"error": f"S3 error: {str(e)}"})}
+
 
         cdn_url = f"https://cdn.poehali.dev/projects/{os.environ['AWS_ACCESS_KEY_ID']}/bucket/{key}"
 
