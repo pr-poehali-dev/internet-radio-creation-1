@@ -1,0 +1,12 @@
+{
+  "tests": [
+    {
+      "name": "GET settings",
+      "method": "GET",
+      "path": "/",
+      "expectedStatus": 200,
+      "expectedBody": {"stream_mode": "playlist"},
+      "bodyMatcher": "partial"
+    }
+  ]
+}

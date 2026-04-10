@@ -1,0 +1,22 @@
+{
+  "tests": [
+    {
+      "name": "Auth with correct password",
+      "method": "POST",
+      "path": "/",
+      "body": {"password": "admin123"},
+      "expectedStatus": 200,
+      "expectedBody": {"ok": true},
+      "bodyMatcher": "partial"
+    },
+    {
+      "name": "Auth with wrong password",
+      "method": "POST",
+      "path": "/",
+      "body": {"password": "wrong"},
+      "expectedStatus": 401,
+      "expectedBody": {"ok": false},
+      "bodyMatcher": "partial"
+    }
+  ]
+}
