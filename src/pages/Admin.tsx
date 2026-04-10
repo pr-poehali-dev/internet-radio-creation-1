@@ -95,34 +95,55 @@ export default function Admin() {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
+    const MAX_SIZE_MB = 8;
+    const MAX_SIZE = MAX_SIZE_MB * 1024 * 1024;
+
     setUploading(true);
+    let hasError = false;
+
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
+
+      if (file.size > MAX_SIZE) {
+        setUploadProgress(`Файл "${file.name}" слишком большой (макс. ${MAX_SIZE_MB} МБ)`);
+        hasError = true;
+        await new Promise((r) => setTimeout(r, 2500));
+        continue;
+      }
+
       setUploadProgress(`Загружаю ${i + 1}/${files.length}: ${file.name}`);
 
       const reader = new FileReader();
-      await new Promise<void>((resolve) => {
+      const uploadResult = await new Promise<boolean>((resolve) => {
         reader.onload = async (ev) => {
           const base64 = (ev.target?.result as string).split(",")[1];
           const title = file.name.replace(/\.(mp3|wav|ogg|flac)$/i, "").replace(/_/g, " ");
 
           try {
-            await fetch(API_TRACKS, {
+            const res = await fetch(API_TRACKS, {
               method: "POST",
               headers: { "Content-Type": "application/json", "X-Admin-Token": token },
               body: JSON.stringify({ title, artist: "", file_data: base64, file_name: file.name }),
             });
+            resolve(res.ok);
           } catch (_e) {
-            // ignore upload error for individual file
+            resolve(false);
           }
-          resolve();
         };
+        reader.onerror = () => resolve(false);
         reader.readAsDataURL(file);
       });
+
+      if (!uploadResult) {
+        setUploadProgress(`Ошибка при загрузке "${file.name}"`);
+        hasError = true;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
     }
 
     setUploading(false);
-    setUploadProgress("");
+    if (!hasError) setUploadProgress("");
+    else setTimeout(() => setUploadProgress(""), 3000);
     if (fileInputRef.current) fileInputRef.current.value = "";
     loadTracks();
   };
@@ -275,7 +296,7 @@ export default function Admin() {
                 <>
                   <Icon name="Upload" size={32} className="text-muted-foreground mx-auto mb-3" />
                   <p className="text-sm font-medium mb-1">Нажмите или перетащите файлы</p>
-                  <p className="text-xs text-muted-foreground">MP3, WAV, OGG, FLAC — можно несколько сразу</p>
+                  <p className="text-xs text-muted-foreground">MP3, WAV, OGG, FLAC · до 8 МБ на файл</p>
                 </>
               )}
             </div>
